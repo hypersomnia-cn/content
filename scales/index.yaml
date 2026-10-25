@@ -1,0 +1,6 @@
+schemaVersion: 1
+scales:
+  - ihss
+  - ess
+  - fss
+  - psqi
