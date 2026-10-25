@@ -1,4 +1,4 @@
-name: Validate and publish content
+name: Validate content and notify website
 on:
   push:
     branches: [main]
@@ -7,86 +7,22 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: content-pages-${{ github.ref }}
+  group: content-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: read
-    env:
-      IH_CONTENT_DIR: ${{ github.workspace }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Read the pinned website version
-        id: website
-        shell: bash
-        run: |
-          node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          const config = JSON.parse(fs.readFileSync('website.json', 'utf8'));
-          if (config.schemaVersion !== 1 || config.repository !== 'hypersomnia-cn/website' || !/^[a-f0-9]{40}$/.test(config.ref))
-            throw new Error('Set website.json ref to the reviewed website commit SHA before publishing.');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `ref=${config.ref}\n`);
-          JS
-      - uses: actions/checkout@v4
-        with:
-          repository: hypersomnia-cn/website
-          ref: ${{ steps.website.outputs.ref }}
-          path: .website
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .website/package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: .website/pnpm-lock.yaml
-      - uses: actions/configure-pages@v5
-        id: pages
-      - name: Check, build and test
-        working-directory: .website
-        env:
-          NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-          SITE_ORIGIN: ${{ steps.pages.outputs.origin }}
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm check
-          pnpm format:check
-          pnpm exec prettier --check ../scales ../wiki ../blog ../website.json ../.github
-          pnpm exec playwright install --with-deps chromium
-          pnpm build
-          pnpm validate:static
-          pnpm test:e2e
-      - name: Record source revisions
-        shell: bash
-        run: |
-          CONTENT_SHA=$(git rev-parse HEAD)
-          WEBSITE_SHA=$(git -C .website rev-parse HEAD)
-          node --input-type=module - "$CONTENT_SHA" "$WEBSITE_SHA" <<'JS'
-          import fs from 'node:fs';
-          const [content, website] = process.argv.slice(2);
-          fs.writeFileSync('.website/out/build-info.json', JSON.stringify({ content, website }) + '\n');
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Content: ${content}\n\nWebsite: ${website}\n`);
-          JS
-      - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        with:
-          path: .website/out
-  deploy:
+  check:
+    uses: hypersomnia-cn/hypersomnia-cn.github.io/.github/workflows/check-content.yml@main
+  publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: check
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/deploy-pages@v4
-        id: deploy
+      - name: Trigger website build
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::Set WEBSITE_DISPATCH_TOKEN to a token with Actions: write access to hypersomnia-cn/hypersomnia-cn.github.io.'
+            exit 1
+          fi
+          gh workflow run publish.yml --repo hypersomnia-cn/hypersomnia-cn.github.io --ref main
